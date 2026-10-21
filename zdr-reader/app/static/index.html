@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Private docs</title>
+<!-- No external fonts, scripts, or images: this page makes no requests outside localhost. -->
+<style>
+:root{
+  --bg:#EDF0F2; --panel:#F8F9FA; --ink:#1B2430; --muted:#5B6675; --line:#D3D9DF;
+  --accent:#2F5D6B; --accent-ink:#fff; --you:#DDE6EA; --err:#9B2C2C;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#12171D; --panel:#1A2129; --ink:#E3E8ED; --muted:#93A0AE; --line:#2B3540;
+  --accent:#7FB0BF; --accent-ink:#0F1418; --you:#22313A; --err:#E58C8C; color-scheme:dark;
+}}
+*{box-sizing:border-box}
+body{margin:0;height:100vh;display:grid;grid-template-columns:300px 1fr;background:var(--bg);color:var(--ink);
+  font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+aside{border-right:1px solid var(--line);padding:20px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+h1{font-size:17px;margin:0;letter-spacing:-.01em}
+.note{color:var(--muted);font-size:13px;margin:0}
+.drop{border:1.5px dashed var(--line);border-radius:10px;padding:18px;text-align:center;cursor:pointer;color:var(--muted)}
+.drop.over,.drop:focus-visible{border-color:var(--accent);color:var(--ink);outline:none}
+ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+li{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px}
+li:hover{background:var(--panel)}
+li label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+li small{color:var(--muted)}
+button{font:inherit;cursor:pointer;border:0;border-radius:8px}
+.del{background:none;color:var(--muted);padding:2px 6px}
+.del:hover{color:var(--err)}
+main{display:flex;flex-direction:column;min-width:0}
+#log{flex:1;overflow:auto;padding:24px;display:flex;flex-direction:column;gap:16px}
+.msg{max-width:72ch;white-space:pre-wrap}
+.you{align-self:flex-end;background:var(--you);padding:10px 14px;border-radius:12px}
+.bot{background:var(--panel);border:1px solid var(--line);padding:14px 16px;border-radius:12px}
+details{margin-top:10px;color:var(--muted);font-size:13px}
+details p{margin:6px 0;white-space:pre-wrap}
+.err{color:var(--err)}
+form{display:flex;gap:10px;padding:16px 24px;border-top:1px solid var(--line)}
+textarea{flex:1;resize:none;font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;padding:10px 12px;min-height:46px}
+textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.send{background:var(--accent);color:var(--accent-ink);padding:0 18px}
+.send:disabled{opacity:.5;cursor:default}
+.empty{color:var(--muted);margin:auto;text-align:center;max-width:40ch}
+@media (max-width:760px){body{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:auto;min-height:100vh}
+  aside{border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<aside>
+  <h1>Private docs</h1>
+  <p class="note">Files are parsed and answered on this machine. Nothing is sent anywhere.</p>
+  <div class="drop" id="drop" tabindex="0" role="button">Drop files here or click to add<br><small>PDF, Word, PowerPoint, HTML, images</small></div>
+  <input type="file" id="file" multiple hidden>
+  <p class="note" id="status"></p>
+  <ul id="docs"></ul>
+  <p class="note" id="scope">Asking across all documents.</p>
+</aside>
+<main>
+  <div id="log"><p class="empty" id="empty">Add a document, then ask a question about it.</p></div>
+  <form id="ask">
+    <textarea id="q" placeholder="Ask about your documents" rows="1"></textarea>
+    <button class="send" id="send">Ask</button>
+  </form>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let selected = new Set();
+
+async function loadDocs(){
+  const docs = await (await fetch('/api/documents')).json();
+  selected = new Set([...selected].filter(id => docs.some(d => d.doc_id === id)));
+  $('docs').innerHTML = docs.map(d => `
+    <li><input type="checkbox" id="c${d.doc_id}" ${selected.has(d.doc_id)?'checked':''} data-id="${d.doc_id}">
+    <label for="c${d.doc_id}" title="${esc(d.filename)}">${esc(d.filename)}</label>
+    <small>${d.chunks}</small>
+    <button class="del" data-del="${d.doc_id}" aria-label="Delete ${esc(d.filename)}">✕</button></li>`).join('');
+  updateScope();
+}
+function updateScope(){
+  $('scope').textContent = selected.size ? `Asking only the ${selected.size} checked document${selected.size>1?'s':''}.` : 'Asking across all documents.';
+}
+$('docs').addEventListener('change', e => {
+  const id = e.target.dataset.id; if(!id) return;
+  e.target.checked ? selected.add(id) : selected.delete(id); updateScope();
+});
+$('docs').addEventListener('click', async e => {
+  const id = e.target.dataset.del; if(!id) return;
+  await fetch('/api/documents/'+id, {method:'DELETE'}); selected.delete(id); loadDocs();
+});
+
+async function upload(files){
+  for(const f of files){
+    $('status').textContent = `Reading ${f.name}…`;
+    const fd = new FormData(); fd.append('file', f);
+    const r = await fetch('/api/documents', {method:'POST', body:fd});
+    const j = await r.json();
+    $('status').textContent = r.ok ? `Added ${f.name} (${j.chunks} passages).` : (j.detail || `Couldn't add ${f.name}.`);
+  }
+  loadDocs();
+}
+$('drop').onclick = () => $('file').click();
+$('drop').onkeydown = e => { if(e.key==='Enter'||e.key===' '){ e.preventDefault(); $('file').click(); } };
+$('file').onchange = e => { upload(e.target.files); e.target.value=''; };
+['dragover','dragenter'].forEach(t => $('drop').addEventListener(t, e => { e.preventDefault(); $('drop').classList.add('over'); }));
+['dragleave','drop'].forEach(t => $('drop').addEventListener(t, () => $('drop').classList.remove('over')));
+$('drop').addEventListener('drop', e => { e.preventDefault(); upload(e.dataTransfer.files); });
+
+function add(cls, html){ $('empty')?.remove(); const d=document.createElement('div'); d.className='msg '+cls; d.innerHTML=html; $('log').append(d); $('log').scrollTop=1e9; return d; }
+$('q').addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); $('ask').requestSubmit(); } });
+$('ask').onsubmit = async e => {
+  e.preventDefault();
+  const question = $('q').value.trim(); if(!question) return;
+  $('q').value=''; $('send').disabled = true;
+  add('you', esc(question));
+  const bot = add('bot', '<span class="note">Thinking…</span>');
+  try{
+    const r = await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({question, doc_ids: selected.size ? [...selected] : null})});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || 'Request failed.');
+    bot.innerHTML = esc(j.answer) + `<details><summary>Sources (${j.sources.length})</summary>` +
+      j.sources.map(s => `<p><b>[${s.n}] ${esc(s.filename)}</b>\n${esc(s.text)}…</p>`).join('') + '</details>';
+  }catch(err){ bot.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+  $('send').disabled = false; $('q').focus();
+};
+loadDocs();
+</script>
+</body>
+</html>
